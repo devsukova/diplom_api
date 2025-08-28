@@ -1,78 +1,86 @@
 ﻿import requests
-import os
 import json
+from io import BytesIO
+from urllib.parse import quote
 
-# Название группы в Нетологии
-GROUP_NAME = "PD-130" 
+# Название вашей группы в Нетологии
+GROUP_NAME = "PD-130"
 
-# получение картинки с Cataas
-def get_cat_image(text, save_path):
-    url = f"https://cataas.com/cat/cute/says/{text}"
-    response = requests.get(url, stream=True)
+
+def get_cat_image_bytes(text: str) -> BytesIO:
+    url = f"https://cataas.com/cat/cute/says/{quote(text)}"
+    response = requests.get(url)
     if response.status_code == 200:
-        with open(save_path, "wb") as f:
-            for chunk in response.iter_content(1024):
-                f.write(chunk)
-        print(f"[+] Картинка сохранена локально: {save_path}")
-        return True
+        print(f"Картинка с текстом '{text}' получена.")
+        return BytesIO(response.content)
     else:
-        print("[-] Не удалось получить картинку.")
-        return False
+        raise Exception(f"[!] Ошибка загрузки картинки '{text}': {response.status_code}")
 
-# загрузка файла на Яндекс.Диск
-def upload_to_yandex_disk(file_path, yandex_token, folder, file_name):
-    headers = {
-        "Authorization": f"OAuth {yandex_token}"
-    }
 
-    # Создание папки 
-    folder_url = f"https://cloud-api.yandex.net/v1/disk/resources"
-    requests.put(folder_url, headers=headers, params={"path": folder})
+def create_folder_on_disk(token: str, folder_name: str) -> None:
+    url = "https://cloud-api.yandex.net/v1/disk/resources"
+    headers = {"Authorization": f"OAuth {token}"}
+    params = {"path": folder_name}
+    response = requests.put(url, headers=headers, params=params)
 
-    # Получение URL для загрузки
-    upload_url = f"{folder_url}/upload"
-    response = requests.get(upload_url, headers=headers, params={
-        "path": f"{folder}/{file_name}",
-        "overwrite": "true"
-    })
+    if response.status_code == 201:
+        print(f"Папка '{folder_name}' создана на Яндекс.Диске.")
+    elif response.status_code == 409:
+        print(f"[i] Папка '{folder_name}' уже существует на Яндекс.Диске.")
+    else:
+        raise Exception(f"[!] Ошибка создания папки: {response.status_code}")
+
+
+def upload_to_yandex_disk(token: str, folder: str, file_name: str, file_data: BytesIO) -> int:
+    headers = {"Authorization": f"OAuth {token}"}
+    path_on_disk = f"{folder}/{file_name}"
+
+    # Получаем ссылку для загрузки
+    url = "https://cloud-api.yandex.net/v1/disk/resources/upload"
+    params = {"path": path_on_disk, "overwrite": "true"}
+    response = requests.get(url, headers=headers, params=params)
 
     if response.status_code == 200:
-        href = response.json().get("href")
-        with open(file_path, "rb") as f:
-            upload_response = requests.put(href, files={"file": f})
+        href = response.json()["href"]
+        upload_response = requests.put(href, data=file_data.getvalue())
         if upload_response.status_code == 201:
-            print(f"[+] Файл загружен на Яндекс.Диск: {folder}/{file_name}")
-            return True
+            print(f"Файл '{file_name}' загружен на Яндекс.Диск.")
+            return len(file_data.getvalue())
         else:
-            print("[-] Ошибка при загрузке файла.")
+            raise Exception(f"[!] Ошибка при загрузке файла '{file_name}'.")
     else:
-        print("[-] Не удалось получить ссылку для загрузки.")
-    return False
-
+        raise Exception(f"[!] Не удалось получить ссылку загрузки для '{file_name}'.")
 
 
 if __name__ == "__main__":
-    text = input("Введите текст для картинки: ").strip()
-    yandex_token = input("Введите токен Яндекс.Диска: ").strip()
+    texts_input = input("Введите тексты для картинок (через запятую): ").strip()
+    token = input("Введите OAuth-токен Яндекс.Диска: ").strip()
 
-    file_name = f"{text}.jpg"
-    local_folder = "cats"
-    os.makedirs(local_folder, exist_ok=True)
-    local_path = os.path.join(local_folder, file_name)
+    texts = [t.strip() for t in texts_input.split(",") if t.strip()]
+    if not texts:
+        print("[!]Не введено ни одного текста.")
 
-    # Получение и сохранение картинки
-    if get_cat_image(text, local_path):
-        file_size = os.path.getsize(local_path)
+    try:
+        create_folder_on_disk(token, GROUP_NAME)
+    except Exception as e:
+        print(e)
 
-        # Загрузка на Диск
-        if upload_to_yandex_disk(local_path, yandex_token, GROUP_NAME, file_name):
-            # Сохраняем JSON с информацией о размере
-            json_data = {
-                "file_name": file_name,
-                "size_bytes": file_size
-            }
+    results = []
 
-            with open("upload_info.json", "w", encoding="utf-8") as f:
-                json.dump(json_data, f, ensure_ascii=False, indent=4)
-            print("[+] Информация сохранена в upload_info.json")
+    for text in texts:
+        try:
+            img_bytes = get_cat_image_bytes(text)
+            filename = f"{text.replace(' ', '_')}.jpg"
+            size = upload_to_yandex_disk(token, GROUP_NAME, filename, img_bytes)
+            results.append({
+                "file_name": filename,
+                "original_text": text,
+                "size_bytes": size
+            })
+        except Exception as e:
+            print(e)
 
+    # Сохранение результата
+    with open("upload_info.json", "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=4)
+        print(f"Информация сохранена в 'upload_info.json' ({len(results)} файл(а/ов)).")
